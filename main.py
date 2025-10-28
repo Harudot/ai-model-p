@@ -10,7 +10,7 @@ from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
 
 # ==== Paths ====
 model_path = "C:/Projects/python/AI/model_cnn.pth"
-image_folder = "C:/Projects/python/ai/images"
+image_folder = "C:/Projects/python/ai/Aryabal"
 
 # ==== Labels Mapping ====
 labels_map = {

@@ -1,137 +1,117 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, random_split
-import pandas as pd
+import torchvision.transforms as transforms
+from PIL import Image, ImageOps, ImageEnhance
+import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-import time
-from cnn_model import ImprovedCNN as CNNModel  # your CNN model file
+import tkinter as tk
 
-# ======== SETTINGS ========
-csv_path = "C:/Projects/python/AI/character dataset/HMCC letters merged.csv"
-model_save_path = "C:/Projects/python/AI/model_cnn.pth"
-batch_size = 64
-epochs = 30
-patience = 5
-learning_rate = 0.001
+# ==== Model Definition (same as training) ====
+class ImprovedCNN(nn.Module):
+    def __init__(self, num_classes):
+        super(ImprovedCNN, self).__init__()
+        self.layer1 = nn.Sequential(
+            nn.Conv2d(1, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, 32, 3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout(0.25)
+        )
+        self.layer2 = nn.Sequential(
+            nn.Conv2d(32, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Dropout(0.25)
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(64*7*7, 256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, num_classes)
+        )
+    def forward(self, x):
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return x
 
-# ======== CUSTOM DATASET ========
-class CSVDataset(Dataset):
-    def __init__(self, csv_file):
-        data = pd.read_csv(csv_file).values
-        self.X = torch.tensor(data[:, 1:], dtype=torch.float32).reshape(-1, 1, 28, 28) / 255.0
-        self.y = torch.tensor(data[:, 0], dtype=torch.long)
+# ==== Load Model ====
+num_classes = 35
+model = ImprovedCNN(num_classes)
+model.load_state_dict(torch.load("C:/Projects/python/AI/model_cnn.pth", map_location="cpu"))
+model.eval()
 
-    def __len__(self):
-        return len(self.y)
+# ==== Labels ====
+LABELS = {
+   1: "а", 2: "б", 3: "в", 4: "г", 5: "д", 6: "е", 7: "ё", 8: "ж",
+   9: "з", 10: "и", 11: "й", 12: "к", 13: "л", 14: "м", 15: "н", 16: "о",
+   17: "ө", 18: "п", 19: "р", 20: "с", 21: "т", 22: "у", 23: "ү", 24: "ф",
+   25: "х", 26: "ц", 27: "ч", 28: "ш", 29: "щ", 30: "ъ", 31: "ь", 32: "ы",
+   33: "э", 34: "ю", 35: "я"
+}
 
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+# ==== Preprocess Drawing ====
+def preprocess_image(img):
+    # Convert to grayscale
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Invert colors (white on black)
+    img = cv2.bitwise_not(img)
+    # Threshold / Binarize
+    _, img = cv2.threshold(img, 50, 255, cv2.THRESH_BINARY)
+    # Find bounding box of content
+    coords = cv2.findNonZero(img)
+    x, y, w, h = cv2.boundingRect(coords)
+    img = img[y:y+h, x:x+w]
+    # Resize to 20x20 and pad to 28x28
+    img = cv2.resize(img, (20, 20), interpolation=cv2.INTER_AREA)
+    padded = np.pad(img, ((4,4),(4,4)), mode='constant', constant_values=0)
+    # Convert to tensor
+    tensor = transforms.ToTensor()(padded).unsqueeze(0)
+    return tensor
 
-dataset = CSVDataset(csv_path)
-
-# ======== SPLIT TRAIN / VALIDATION ========
-train_size = int(0.8 * len(dataset))
-val_size = len(dataset) - train_size
-train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
-
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=batch_size)
-
-# ======== MODEL SETUP ========
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model = CNNModel(num_classes=len(torch.unique(dataset.y))).to(device)
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-# ======== METRICS ========
-train_losses = []
-val_losses = []
-val_accuracies = []
-best_val_loss = np.inf
-no_improve_count = 0
-
-# ======== LIVE PLOTTING ========
-plt.ion()
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
-
-# ======== TRAIN LOOP ========
-for epoch in range(1, epochs + 1):
-    start_time = time.time()
-    model.train()
-    running_loss = 0.0
-
-    for images, labels in train_loader:
-        images, labels = images.to(device), labels.to(device)
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-
-    avg_train_loss = running_loss / len(train_loader)
-    train_losses.append(avg_train_loss)
-
-    # ===== Validation =====
-    model.eval()
-    val_loss = 0
-    correct = 0
-    total = 0
+# ==== Predict Function ====
+def predict(img):
     with torch.no_grad():
-        for images, labels in val_loader:
-            images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            val_loss += loss.item()
-            _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
+        tensor = preprocess_image(img)
+        outputs = model(tensor)
+        probs = nn.Softmax(dim=1)(outputs)
+        conf, idx = torch.max(probs, 1)
+        return LABELS[idx.item()+1], conf.item()*100
 
-    avg_val_loss = val_loss / len(val_loader)
-    accuracy = 100 * correct / total
-    val_losses.append(avg_val_loss)
-    val_accuracies.append(accuracy)
+# ==== Tkinter Drawing ====
+class App:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Draw a character")
+        self.canvas = tk.Canvas(self.root, width=280, height=280, bg="black")
+        self.canvas.pack()
+        self.image = np.zeros((280,280,3), dtype=np.uint8)
+        self.canvas.bind("<B1-Motion>", self.paint)
+        btn = tk.Button(self.root, text="Predict", command=self.on_predict)
+        btn.pack()
+        self.label = tk.Label(self.root, text="Draw and click Predict", font=("Arial",16))
+        self.label.pack()
+        self.root.mainloop()
 
-    # ===== Print progress =====
-    print(f"Epoch {epoch}/{epochs} | Train Loss: {avg_train_loss:.4f} | "
-          f"Val Loss: {avg_val_loss:.4f} | Val Acc: {accuracy:.2f}% | "
-          f"Time: {(time.time()-start_time):.1f}s")
+    def paint(self, event):
+        x1, y1 = event.x-10, event.y-10
+        x2, y2 = event.x+10, event.y+10
+        cv2.circle(self.image, (event.x, event.y), 10, (255,255,255), -1)
+        self.canvas.create_oval(x1, y1, x2, y2, fill="white", outline="white")
 
-    # ===== Live Graph =====
-    ax1.clear()
-    ax2.clear()
-    ax1.plot(train_losses, label='Train Loss', color='blue')
-    ax1.plot(val_losses, label='Val Loss', color='orange')
-    ax1.set_title('Training vs Validation Loss')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Loss')
-    ax1.legend()
-    ax1.grid(True)
+    def on_predict(self):
+        char, conf = predict(self.image)
+        self.label.config(text=f"🧠 Predicted: {char} ({conf:.1f}%)")
 
-    ax2.plot(val_accuracies, label='Val Accuracy', color='green')
-    ax2.set_title('Validation Accuracy')
-    ax2.set_xlabel('Epoch')
-    ax2.set_ylabel('Accuracy (%)')
-    ax2.legend()
-    ax2.grid(True)
+# ==== Run App ====
+App()
 
-    plt.tight_layout()
-    plt.pause(0.1)
-
-    # ===== Early Stopping =====
-    if avg_val_loss < best_val_loss:
-        best_val_loss = avg_val_loss
-        torch.save(model.state_dict(), model_save_path)
-        no_improve_count = 0
-    else:
-        no_improve_count += 1
-        if no_improve_count >= patience:
-            print(f"Early stopping at epoch {epoch} (no improvement for {patience} epochs)")
-            break
-
-plt.ioff()
-plt.show()
-print(f"💾 Model improved and saved at epoch {epoch} (Val Loss: {avg_val_loss:.4f})")
 
