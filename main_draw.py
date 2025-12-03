@@ -4,9 +4,11 @@ from PIL import Image, ImageDraw, ImageOps, ImageEnhance
 import numpy as np
 import tkinter as tk
 from tkinter import messagebox
-import matplotlib.pyplot as plt
+import cv2
+import torchvision.transforms as transforms
 
-# ==== Load Model ====
+
+# ==== Model Definition ====
 class ImprovedCNN(nn.Module):
     def __init__(self, num_classes):
         super(ImprovedCNN, self).__init__()
@@ -44,10 +46,8 @@ class ImprovedCNN(nn.Module):
         x = self.fc(x)
         return x
 
-model = ImprovedCNN(35)
-model.load_state_dict(torch.load("model_cnn.pth", map_location="cpu"))
-model.eval()
 
+# ==== Labels ====
 LABELS = {
    1: "а", 2: "б", 3: "в", 4: "г", 5: "д", 6: "е", 7: "ё", 8: "ж",
    9: "з", 10: "и", 11: "й", 12: "к", 13: "л", 14: "м", 15: "н", 16: "о",
@@ -56,18 +56,55 @@ LABELS = {
    33: "э", 34: "ю", 35: "я"
 }
 
-# ==== Drawing Window ====
+# ==== Load Model ====
+model = ImprovedCNN(35)
+model.load_state_dict(torch.load("model_cnn.pth", map_location="cpu"))
+model.eval()
+
+
+# ==== Preprocessing - MATCH TRAINING DATA ====
+def preprocess_single_char(roi_binary):
+    """
+    Takes binary image (white char on black) and converts to 28x28 tensor
+    matching how training data was prepared
+    """
+    # Convert to PIL
+    img = Image.fromarray(roi_binary).convert("L")
+    
+    # Find bounding box to crop whitespace
+    bbox = img.getbbox()
+    if bbox:
+        img = img.crop(bbox)
+    
+    # Resize to 20x20 (to match training prep - resize FIRST)
+    img = img.resize((20, 20), Image.LANCZOS)
+    
+    # Pad to 28x28 (add 4 pixels on each side - black background)
+    padded = Image.new("L", (28, 28), color=0)
+    padded.paste(img, (4, 4))
+    
+    # Convert to tensor [0, 1]
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+    ])
+    tensor = transform(padded).unsqueeze(0)
+    return tensor, np.array(padded)
+
+
+# ==== Drawing Application ====
 class DrawApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Draw Cyrillic Character - FIXED!")
+        self.root.title("Mongolian Character Recognition")
         
-        # BLACK canvas (like training data!)
-        self.canvas = tk.Canvas(root, width=280, height=280, bg='black')
-        self.canvas.pack()
+        info = tk.Label(root, text="Draw ONE character at a time | Draw THICK and BOLD", 
+                       font=("Arial", 11), fg="yellow")
+        info.pack(pady=5)
         
-        # Black background image
-        self.image = Image.new("L", (280, 280), 0)  # 0 = black
+        self.canvas = tk.Canvas(root, width=400, height=400, bg='black', cursor="cross")
+        self.canvas.pack(pady=10)
+        
+        self.image = Image.new("L", (400, 400), 0)
         self.draw = ImageDraw.Draw(self.image)
         
         self.canvas.bind("<B1-Motion>", self.paint)
@@ -75,90 +112,77 @@ class DrawApp:
         btn_frame = tk.Frame(root)
         btn_frame.pack()
         
-        tk.Button(btn_frame, text="Recognize", command=self.recognize_debug, bg='green', fg='white', width=15).pack(side=tk.LEFT, padx=3, pady=5)
-        tk.Button(btn_frame, text="Clear", command=self.clear, bg='red', fg='white', width=15).pack(side=tk.LEFT, padx=3, pady=5)
+        tk.Button(btn_frame, text="Recognize", command=self.recognize,
+                  bg='green', fg='white', width=15, font=("Arial", 12)).pack(side=tk.LEFT, padx=5, pady=5)
+        tk.Button(btn_frame, text="Clear", command=self.clear,
+                  bg='red', fg='white', width=15, font=("Arial", 12)).pack(side=tk.LEFT, padx=5, pady=5)
         
-        self.result_label = tk.Label(root, text="Draw WHITE on BLACK (like training data)", font=("Arial", 12))
+        self.result_label = tk.Label(root, text="", font=("Arial", 16, "bold"), fg="cyan")
         self.result_label.pack(pady=5)
         
+        self.confidence_label = tk.Label(root, text="", font=("Arial", 12), fg="orange")
+        self.confidence_label.pack(pady=5)
+
     def paint(self, event):
-        x1, y1 = (event.x - 8), (event.y - 8)
-        x2, y2 = (event.x + 8), (event.y + 8)
-        # Draw WHITE on black (like training data!)
+        # THICK brush - matches training style
+        radius = 12
+        x1, y1 = event.x - radius, event.y - radius
+        x2, y2 = event.x + radius, event.y + radius
         self.canvas.create_oval(x1, y1, x2, y2, fill='white', width=0)
-        self.draw.ellipse([x1, y1, x2, y2], fill=255)  # 255 = white
-    
+        self.draw.ellipse([x1, y1, x2, y2], fill=255)
+
     def clear(self):
         self.canvas.delete("all")
-        self.image = Image.new("L", (280, 280), 0)  # 0 = black
+        self.image = Image.new("L", (400, 400), 0)
         self.draw = ImageDraw.Draw(self.image)
-        self.result_label.config(text="Draw WHITE on BLACK (like training data)")
-    
-    def preprocess(self):
-        img = self.image.copy()
-        bbox = img.getbbox()
-        if bbox is None:
-            return None
+        self.result_label.config(text="")
+        self.confidence_label.config(text="")
+
+    def recognize(self):
+        img_array = np.array(self.image)
         
-        img = img.crop(bbox)
-        w, h = img.size
-        new_size = max(w, h) + 40
-        new_img = Image.new("L", (new_size, new_size), 0)  # 0 = black background
-        new_img.paste(img, ((new_size - w) // 2, (new_size - h) // 2))
+        # Binarize
+        _, binary = cv2.threshold(img_array, 127, 255, cv2.THRESH_BINARY)
         
-        # NO invert - already correct colors!
-        img = ImageEnhance.Contrast(new_img).enhance(2.0)
-        threshold = 128
-        img = img.point(lambda p: 255 if p > threshold else 0)
-        img = img.resize((28, 28), Image.LANCZOS)
+        # Dilate to connect any broken strokes
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        binary = cv2.dilate(binary, kernel, iterations=1)
         
-        return img
-    
-    def recognize_debug(self):
-        processed_img = self.preprocess()
-        if processed_img is None:
+        # Find the character region
+        coords = cv2.findNonZero(binary)
+        if coords is None:
             messagebox.showinfo("Error", "Draw something first!")
             return
         
-        processed_img.save("debug_your_drawing.png")
+        x, y, w, h = cv2.boundingRect(coords)
         
-        img_array = np.array(processed_img).astype(np.float32) / 255.0
-        img_tensor = torch.tensor(img_array).unsqueeze(0).unsqueeze(0)
+        # Extract ROI
+        roi = binary[y:y+h, x:x+w]
         
+        # Preprocess (resize to 20x20, pad to 28x28)
+        try:
+            tensor, preview = preprocess_single_char(roi)
+        except Exception as e:
+            messagebox.showerror("Error", f"Preprocessing failed: {e}")
+            return
+        
+        # Predict
         with torch.no_grad():
-            outputs = model(img_tensor)
+            outputs = model(tensor)
             probs = nn.Softmax(dim=1)(outputs)
-            
-            # Get TOP 5 predictions
-            top5_probs, top5_indices = torch.topk(probs, 5)
-            
-            predictions_text = "TOP 5:\n"
-            for i in range(5):
-                char = LABELS.get(top5_indices[0][i].item() + 1, "?")
-                conf = top5_probs[0][i].item() * 100
-                predictions_text += f"{i+1}. {char}: {conf:.1f}%\n"
-            
-            # Best prediction
-            best_char = LABELS.get(top5_indices[0][0].item() + 1, "?")
-            best_conf = top5_probs[0][0].item() * 100
+            conf, pred_idx = torch.max(probs, 1)
+            char = LABELS.get(pred_idx.item() + 1, "?")
+            confidence = conf.item() * 100
         
-        # Show comparison
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+        self.result_label.config(text=f"Result: {char}")
+        self.confidence_label.config(text=f"Confidence: {confidence:.1f}%")
         
-        axes[0].imshow(processed_img, cmap='gray')
-        axes[0].set_title(f"Your Drawing\n(WHITE on BLACK)", fontsize=14)
-        axes[0].axis('off')
-        
-        axes[1].text(0.5, 0.5, predictions_text, 
-                    ha='center', va='center', fontsize=14,
-                    bbox=dict(boxstyle='round', facecolor='lightgreen'))
-        axes[1].set_title(f"Prediction: {best_char} ({best_conf:.1f}%)", fontsize=14, fontweight='bold')
-        axes[1].axis('off')
-        
-        plt.tight_layout()
-        plt.show()
-        
-        self.result_label.config(text=f"Predicted: {best_char} ({best_conf:.1f}%)")
+        # Show preprocessed 28x28 image
+        preview_img = cv2.resize(preview, (280, 280), interpolation=cv2.INTER_NEAREST)
+        cv2.imshow("Preprocessed 28x28 Image (what model sees)", preview_img)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
 
 # ==== Run ====
 root = tk.Tk()

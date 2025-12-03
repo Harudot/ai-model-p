@@ -101,8 +101,3 @@ disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=list(labels_ma
 disp.plot(cmap=plt.cm.Blues, xticks_rotation=90, colorbar=False)
 plt.title(f"Confusion Matrix (Accuracy: {accuracy:.2f}%)")
 plt.show()
-
-
-
-
-
