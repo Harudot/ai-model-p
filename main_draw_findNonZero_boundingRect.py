@@ -165,7 +165,7 @@ class DrawApp:
         except Exception as e:
             messagebox.showerror("Error", f"Preprocessing failed: {e}")
             return
-        
+        # findNonZero + boundingRect
         # Predict
         with torch.no_grad():
             outputs = model(tensor)
