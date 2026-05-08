@@ -6,11 +6,11 @@ from cnn_model import CNNModel  # import the class
 # ==== 1. Load trained model ====
 num_classes = 35  # total number of Mongolian characters
 model = CNNModel(num_classes)
-model.load_state_dict(torch.load("C:/Projects/python/AI/model_cnn.pth"))
+model.load_state_dict(torch.load("C:/Projects/python/AI-MODEL-P/model_cnn.pth"))
 model.eval()
 
 # ==== 2. Load Test Data ====
-test_path = "C:/Projects/python/ai/dataset/test_data.csv"
+test_path = "C:/Projects/python/AI-MODEL-P/dataset/test_data.csv"
 test_df = pd.read_csv(test_path)
 
 # If test CSV has a first column as numeric labels
